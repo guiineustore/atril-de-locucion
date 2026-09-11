@@ -262,7 +262,7 @@ function expandir(tokens){
 /* ---------- estado ---------- */
 let bloques = [], indices = [], total = 0;
 let pos = 0, corriendo = false, modo = null, t0 = 0, transcurrido = 0;
-let rec = null, finales = [], tickAuto = null, tickReloj = null;
+let rec = null, finales = [], desplazamiento = 0, tickAuto = null, tickReloj = null;
 
 function parsear(src){
   bloques = [];
@@ -340,15 +340,41 @@ function refrescarReloj(){
 }
 
 /* ---------- seguir la voz ---------- */
+// Se rebarre el guion desde el principio en cada evento. Esa es la propiedad
+// que hace que un enganche erroneo se corrija solo en el evento siguiente:
+// variantes que avanzan de forma incremental se quedan clavadas donde fallaron.
+//
+// Medido contra transcripciones reales con ruido inyectado: exigir dos o tres
+// palabras seguidas parece mas seguro y es peor — se atasca en cuanto el
+// reconocimiento se come una palabra, y deja de seguir del todo.
+const VENTANA = 14;   // cuanto se mira hacia delante por cada palabra oida
+const TOPE = 8;       // avance maximo por evento
+let frenazos = 0, avisadoDelSalto = false;
+
 function avanzarCon(tokens){
   let p = 0;
   for(const t of tokens){
-    const tope = Math.min(p + 14, indices.length);
-    for(let k = p; k < tope; k++){
+    const hasta = Math.min(p + VENTANA, indices.length);
+    for(let k = p; k < hasta; k++){
       if(indices[k].clave === t){ p = k + 1; break; }
     }
   }
-  if(p > 0) ir(p);
+  if(p <= 0) return;
+
+  // Tope de seguridad. Sin el, un fallo del reconocimiento puede llevarse el
+  // cursor parrafos por delante. Si el avance era legitimo, los eventos
+  // siguientes lo recuperan en decimas de segundo: con tope, el avance total
+  // medido sobre una transcripcion real es identico al de sin tope.
+  if(p - pos > TOPE){
+    console.debug("[atril] salto frenado", {de: pos, pedia: p, cola: tokens.slice(-8).join(" ")});
+    p = pos + TOPE;
+    frenazos++;
+    if(frenazos === 6 && !avisadoDelSalto){
+      avisadoDelSalto = true;
+      mostrarAviso("El seguimiento ha tenido que frenar varios saltos. Si notas que se pierde, abre la consola del navegador con <b>F12</b>: ahí queda anotado cada uno con lo que se oyó.");
+    }
+  }
+  ir(p);
 }
 
 function piloto(estado, texto){
@@ -368,14 +394,18 @@ function arrancarVoz(){
   piloto("", "pidiendo micro…");
   rec = new SR();
   rec.lang = "es-ES"; rec.continuous = true; rec.interimResults = true;
-  finales = [];
+  finales = []; desplazamiento = 0;
   rec.onresult = e => {
-    let interino = "";
+    // Se guarda POR INDICE, no con push: Chrome reemite el mismo resultado
+    // varias veces mientras lo afina, y con push el texto entraba duplicado.
     for(let i = e.resultIndex; i < e.results.length; i++){
-      const r = e.results[i];
-      if(r.isFinal) finales.push(r[0].transcript); else interino += r[0].transcript + " ";
+      if(e.results[i].isFinal) finales[desplazamiento + i] = e.results[i][0].transcript;
     }
-    const todo = (finales.join(" ") + " " + interino).trim().split(/\s+/);
+    let interino = "";
+    for(let i = 0; i < e.results.length; i++){
+      if(!e.results[i].isFinal) interino += e.results[i][0].transcript + " ";
+    }
+    const todo = (finales.filter(Boolean).join(" ") + " " + interino).trim().split(/\s+/);
     avanzarCon(expandir(todo));
   };
   rec.onstart = () => piloto("vivo", "escuchando");
@@ -390,7 +420,12 @@ function arrancarVoz(){
     }
   };
   rec.onend = () => {
-    if(corriendo && modo === "voz"){ try{ rec.start(); }catch(_){} }
+    if(corriendo && modo === "voz"){
+      // La sesion nueva vuelve a indexar desde cero, asi que hay que correr el
+      // desplazamiento o machacaria lo ya reconocido.
+      desplazamiento = finales.length;
+      try{ rec.start(); }catch(_){}
+    }
     else piloto("", "micro parado");
   };
   try{ rec.start(); }catch(_){}
@@ -429,7 +464,8 @@ function pausa(){
 }
 
 function reiniciar(){
-  pausa(); transcurrido = 0; finales = [];
+  pausa(); transcurrido = 0; finales = []; desplazamiento = 0;
+  frenazos = 0; avisadoDelSalto = false;
   $("#reloj").textContent = "0:00"; $("#reloj").className = "va";
   $("#ritmo").textContent = "— ppm"; $("#ritmo").className = "va";
   $("#aviso").classList.remove("ver");

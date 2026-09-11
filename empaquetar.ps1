@@ -2,10 +2,12 @@
 # Deja fuera el guion propio y los scripts de mantenimiento: el cliente recibe
 # la herramienta limpia, con su texto de ejemplo.
 $origen = Split-Path -Parent $MyInvocation.MyCommand.Path
-$destino = Join-Path (Split-Path -Parent $origen) "atril-de-locucion.zip"
+$destino = Join-Path $origen "atril-de-locucion.zip"
 $temporal = Join-Path $env:TEMP ("atril-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 
-$incluir = @("index.html", "servidor.ps1", "abrir-atril.cmd", "LEEME.md")
+# README.md viaja dentro para que el cliente tenga las instrucciones sin
+# depender de GitHub.
+$incluir = @("index.html", "servidor.ps1", "abrir-atril.cmd", "README.md")
 
 New-Item -ItemType Directory -Path $temporal -Force | Out-Null
 foreach ($f in $incluir) {
